@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdint.h>
 #include "bsp/device.h"
 #include "bsp/display.h"
 #include "bsp/input.h"
@@ -126,6 +127,7 @@ void app_main(void) {
     pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 0, "Connecting to radio...");
     blit();
 
+    /*
     if (wifi_remote_initialize() == ESP_OK) {
 
         pax_background(&fb, WHITE);
@@ -155,6 +157,7 @@ void app_main(void) {
     }
 
     vTaskDelay(pdMS_TO_TICKS(500));
+    */
 
     // Main section of the app
 
@@ -167,82 +170,49 @@ void app_main(void) {
     pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 0, "Welcome! Press any key to trigger an event.");
     blit();
 
-    while (1) {
+    int32_t xoffs[5] = {100, 130, 170, 230, 335};
+    int32_t yoffs[5] = {100, 107, 209, 305, 227};;
+    int32_t xspeed[5] = {2, 1, -1, 3, -2};
+    int32_t yspeed[5] = {1, -1, 2, -2, 3};
+    uint32_t color[5] = {0xFFFF0000, 0xFF00FF00, 0xFFFF00FF, 0xFF00FFFF, 0xFFFFFF00};
+    bool bounce[5] = {false, false, false, false, false};
+    uint8_t i;
+    uint32_t delay = pdMS_TO_TICKS(1);
+    uint8_t bright = 100;
+    while(1) {
         bsp_input_event_t event;
-        if (xQueueReceive(input_event_queue, &event, portMAX_DELAY) == pdTRUE) {
-            bsp_led_write(led_data, sizeof(led_data));
-            switch (event.type) {
-                case INPUT_EVENT_TYPE_KEYBOARD: {
-                    if (event.args_keyboard.ascii != '\b' ||
-                        event.args_keyboard.ascii != '\t') {  // Ignore backspace & tab keyboard events
-                        ESP_LOGI(TAG, "Keyboard event %c (%02x) %s", event.args_keyboard.ascii,
-                                 (uint8_t)event.args_keyboard.ascii, event.args_keyboard.utf8);
-                        pax_simple_rect(&fb, WHITE, 0, 0, pax_buf_get_width(&fb), 72);
-                        pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 0, "Keyboard event");
-                        char text[64];
-                        snprintf(text, sizeof(text), "ASCII:     %c (0x%02x)", event.args_keyboard.ascii,
-                                 (uint8_t)event.args_keyboard.ascii);
-                        pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 18, text);
-                        snprintf(text, sizeof(text), "UTF-8:     %s", event.args_keyboard.utf8);
-                        pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 36, text);
-                        snprintf(text, sizeof(text), "Modifiers: 0x%0" PRIX32, event.args_keyboard.modifiers);
-                        pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 54, text);
-                        blit();
-                    }
-                    break;
-                }
-                case INPUT_EVENT_TYPE_NAVIGATION: {
-                    ESP_LOGI(TAG, "Navigation event %0" PRIX32 ": %s", (uint32_t)event.args_navigation.key,
-                             event.args_navigation.state ? "pressed" : "released");
+        if (xQueueReceive(input_event_queue, &event, delay) == pdTRUE) {
+            bsp_device_restart_to_launcher();
+        }
+        pax_background(&fb, BLACK);
 
-                    if (event.args_navigation.key == BSP_INPUT_NAVIGATION_KEY_F1) {
-                        bsp_device_restart_to_launcher();
-                    }
-                    if (event.args_navigation.key == BSP_INPUT_NAVIGATION_KEY_F2) {
-                        bsp_input_set_backlight_brightness(0);
-                    }
-                    if (event.args_navigation.key == BSP_INPUT_NAVIGATION_KEY_F3) {
-                        bsp_input_set_backlight_brightness(100);
-                    }
+        for(i = 0; i < 5; i++) {
+            bounce[i] = false;
+            xoffs[i] += xspeed[i];
+            if(xoffs[i] < 1 || xoffs[i] > (display_h_res - 50)) {
+                xspeed[i] *= -1;
+                xoffs[i] += xspeed[i];
+                bright = 100;
+                bounce[i] = true;
 
-                    pax_simple_rect(&fb, WHITE, 0, 100, pax_buf_get_width(&fb), 72);
-                    pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 100 + 0, "Navigation event");
-                    char text[64];
-                    snprintf(text, sizeof(text), "Key:       0x%0" PRIX32, (uint32_t)event.args_navigation.key);
-                    pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 100 + 18, text);
-                    snprintf(text, sizeof(text), "State:     %s", event.args_navigation.state ? "pressed" : "released");
-                    pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 100 + 36, text);
-                    snprintf(text, sizeof(text), "Modifiers: 0x%0" PRIX32, event.args_navigation.modifiers);
-                    pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 100 + 54, text);
-                    blit();
-                    break;
-                }
-                case INPUT_EVENT_TYPE_ACTION: {
-                    ESP_LOGI(TAG, "Action event 0x%0" PRIX32 ": %s", (uint32_t)event.args_action.type,
-                             event.args_action.state ? "yes" : "no");
-                    pax_simple_rect(&fb, WHITE, 0, 200 + 0, pax_buf_get_width(&fb), 72);
-                    pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 200 + 0, "Action event");
-                    char text[64];
-                    snprintf(text, sizeof(text), "Type:      0x%0" PRIX32, (uint32_t)event.args_action.type);
-                    pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 200 + 36, text);
-                    snprintf(text, sizeof(text), "State:     %s", event.args_action.state ? "yes" : "no");
-                    pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 200 + 54, text);
-                    blit();
-                    break;
-                }
-                case INPUT_EVENT_TYPE_SCANCODE: {
-                    ESP_LOGI(TAG, "Scancode event 0x%0" PRIX32, (uint32_t)event.args_scancode.scancode);
-                    pax_simple_rect(&fb, WHITE, 0, 300 + 0, pax_buf_get_width(&fb), 72);
-                    pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 300 + 0, "Scancode event");
-                    char text[64];
-                    snprintf(text, sizeof(text), "Scancode:  0x%0" PRIX32, (uint32_t)event.args_scancode.scancode);
-                    pax_draw_text(&fb, BLACK, pax_font_sky_mono, 16, 0, 300 + 36, text);
-                    blit();
-                    break;
-                }
-                default:
-                    break;
+            }
+            yoffs[i] += yspeed[i];
+            if(yoffs[i] < 1 || yoffs[i] > (display_v_res - 50)) {
+                yspeed[i] *= -1;
+                yoffs[i] += yspeed[i];
+                bright = 100;
+                bounce[i] = true;
+            }
+            pax_draw_circle(&fb, color[i], yoffs[i] + 25, xoffs[i] + 25, 25);
+            if(bounce[i]) {
+                pax_draw_circle(&fb, BLACK, yoffs[i] + 25, xoffs[i] + 25, 15);
+                pax_draw_circle(&fb, WHITE, yoffs[i] + 25, xoffs[i] + 25, 10);
             }
         }
+        bsp_input_set_backlight_brightness(bright);
+        if(bright > 0) {
+            bright -= 25;
+        }
+        blit();
     }
 }
