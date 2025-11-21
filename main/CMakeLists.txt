@@ -6,7 +6,11 @@ endif()
 
 idf_component_register(
 	SRCS
-		"main.c"
+		"main.cpp"
+        "graphics.cpp"
+        "model.cpp"
+        "renderer.cpp"
+        "tgaimage.cpp"
 	PRIV_REQUIRES
 		esp_lcd
 		fatfs
