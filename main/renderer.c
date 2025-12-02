@@ -253,9 +253,8 @@ static inline void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     }
 }
 
-// Small negative epsilon for edge test to handle floating-point rounding errors
-// This prevents pixels that should be exactly on an edge from being rejected
-#define EDGE_EPSILON -1e-4f
+// Small negative epsilon for edge test to handle floating-point rounding
+#define EDGE_EPSILON -0.001f
 
 // Rasterize a portion of a triangle (columns from x_start to x_end)
 static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
@@ -302,8 +301,11 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
                     bc2 *= inv_sum;
                 }
 
-                // Interpolate z
+                // Interpolate z and clamp to prevent int16 overflow
                 float z = bc0 * ndc_z[0] + bc1 * ndc_z[1] + bc2 * ndc_z[2];
+                // Clamp z to [-1, 1] range before scaling to int16
+                if (z < -1.0f) z = -1.0f;
+                if (z > 1.0f) z = 1.0f;
                 int16_t z16 = (int16_t)(z * Z_SCALE);
 
                 // Z-buffer test (use >= to handle coplanar triangles on same face)
@@ -384,7 +386,7 @@ static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, i
     // Backface culling using 2D cross product (determinant)
     float det = (screen[1].x - screen[0].x) * (screen[2].y - screen[0].y) -
                 (screen[2].x - screen[0].x) * (screen[1].y - screen[0].y);
-    if (det < 1.0f) {
+    if (det < 0.01f) {
         job->valid = false;
         return false;  // Backface or degenerate triangle
     }

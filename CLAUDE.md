@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A software 3D renderer demo for the Tanmatsu ESP32-P4 badge. Displays a rotating textured cube on the 800x480 display using dual-core parallelization.
+A software 3D renderer demo for the Tanmatsu ESP32-P4 badge. Displays a spinning textured cube on the 800x480 display using dual-core parallelization. The cube rotates on multiple axes while the camera and lighting remain fixed.
 
 ## Build Instructions
 
@@ -11,6 +11,14 @@ make build      # Build the project
 make flash      # Flash to device
 make monitor    # View debug output via USB
 ```
+
+## Controls
+
+- **Space** - Save screenshot to SD card (PPM format in `/sd/cube_screenshot_XXX.ppm`)
+- **ESC** - Return to launcher
+- **Power button** - Return to launcher
+
+Note: SD card must be inserted for screenshots to work.
 
 ## Architecture
 
@@ -23,23 +31,30 @@ make monitor    # View debug output via USB
 
 ## Key Files
 
-- `main/main.c` - Application entry point, display setup, main loop with performance timing
+- `main/main.c` - Application entry point, display setup, input handling, main loop
 - `main/renderer.c` - Pure C 3D renderer with cube geometry and dual-core parallelization
 - `main/renderer.h` - Renderer API (renderer_init, renderer_render_frame)
 - `main/texture_data.h` - Embedded texture (64x64 RGB, wooden crate)
+- `main/sdcard.c` - SD card initialization (SPI mode) and mounting
+- `main/sdcard.h` - SD card API
 - `main/usb_device.c` - USB debug console initialization for ESP32-P4
 
 ## Renderer Details
 
 The renderer implements:
-- 4x4 matrix transformations (lookat, perspective, viewport)
+- 4x4 matrix transformations (lookat, perspective, viewport, rotation)
+- Cube rotation on X, Y, Z axes at different speeds (fixed camera/light)
 - Barycentric coordinate interpolation for UV and depth
 - Texture mapping with nearest-neighbor sampling
-- Z-buffer depth testing (16-bit)
+- Z-buffer depth testing (16-bit with z-clamping to prevent overflow)
 - Diffuse lighting (modulates texture color)
 - Backface culling
 
 Cube is rendered at 480x480 pixels, centered on the 800x480 display with black bars on the sides.
+
+### Z-Buffer Implementation
+
+The z-buffer uses 16-bit integers for faster comparisons and lower memory usage. NDC z-values are clamped to [-1, 1] before scaling to prevent integer overflow, which was causing rendering artifacts near corners close to the camera.
 
 ### Dual-Core Parallelization
 
