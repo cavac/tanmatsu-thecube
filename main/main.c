@@ -13,6 +13,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_types.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hal/lcd_types.h"
@@ -22,6 +23,7 @@
 #include "pax_text.h"
 #include "portmacro.h"
 #include "renderer.h"
+#include "usb_device.h"
 
 // External ST7701 color format function (from esp32-component-mipi-dsi-abstraction)
 extern esp_err_t st7701_set_color_format(lcd_color_rgb_pixel_format_t format);
@@ -43,11 +45,18 @@ void blit(void) {
     bsp_display_blit(0, 0, display_h_res, display_v_res, pax_buf_get_pixels(&fb));
 }
 
+static const char* TAG = "cube";
+
 #define BLACK 0xFF000000
 #define WHITE 0xFFFFFFFF
 #define RED   0xFFFF0000
 
+#define PERF_SAMPLE_FRAMES 50
+
 void app_main(void) {
+    // Initialize USB debug console
+    usb_initialize();
+
     // Start the GPIO interrupt service
     gpio_install_isr_service(0);
 
@@ -143,16 +152,28 @@ void app_main(void) {
     pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 260, "project.");
     pax_draw_text(&fb, WHITE, pax_font_sky_mono, 10, 490, 280, "https://haqr.eu/tinyrenderer/");
 
+    // Performance measurement variables
+    int64_t render_time_sum = 0;
+    int64_t copy_time_sum = 0;
+    int64_t blit_time_sum = 0;
+    int perf_frame_count = 0;
+
     while(1) {
         bsp_input_event_t event;
         if (xQueueReceive(input_event_queue, &event, delay) == pdTRUE) {
             bsp_device_restart_to_launcher();
         }
 
+        int64_t t_start, t_end;
+
         // DRAW 3D CUBE INTO SCREEN BUFFER
+        t_start = esp_timer_get_time();
         renderer_render_frame(cube_buffer, frame_number++);
+        t_end = esp_timer_get_time();
+        render_time_sum += (t_end - t_start);
 
         // Copy rendered cube to screen buffer (centered with black bars)
+        t_start = esp_timer_get_time();
         int x_offset = (display_h_res - 480) / 2;
         uint8_t* fb_pixels = (uint8_t*)pax_buf_get_pixels(&fb);
         int fb_stride = display_h_res * 3;  // RGB888 = 3 bytes per pixel
@@ -162,7 +183,33 @@ void app_main(void) {
             uint8_t* dst = fb_pixels + y * fb_stride + x_offset * 3;
             memcpy(dst, src, 480 * 3);
         }
+        t_end = esp_timer_get_time();
+        copy_time_sum += (t_end - t_start);
 
+        // Blit to display
+        t_start = esp_timer_get_time();
         blit();
+        t_end = esp_timer_get_time();
+        blit_time_sum += (t_end - t_start);
+
+        perf_frame_count++;
+
+        // Log performance stats every PERF_SAMPLE_FRAMES frames
+        if (perf_frame_count >= PERF_SAMPLE_FRAMES) {
+            int64_t avg_render = render_time_sum / PERF_SAMPLE_FRAMES;
+            int64_t avg_copy = copy_time_sum / PERF_SAMPLE_FRAMES;
+            int64_t avg_blit = blit_time_sum / PERF_SAMPLE_FRAMES;
+            int64_t avg_total = avg_render + avg_copy + avg_blit;
+
+            ESP_LOGI(TAG, "Perf (avg %d frames): render=%lldus, copy=%lldus, blit=%lldus, total=%lldus (%.1f fps)",
+                     PERF_SAMPLE_FRAMES, avg_render, avg_copy, avg_blit, avg_total,
+                     1000000.0 / avg_total);
+
+            // Reset counters
+            render_time_sum = 0;
+            copy_time_sum = 0;
+            blit_time_sum = 0;
+            perf_frame_count = 0;
+        }
     }
 }
