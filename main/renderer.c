@@ -330,13 +330,12 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
                 if (z16 >= zbuf_row[x]) {
                     zbuf_row[x] = z16;
 
-                    // Sample texture (nearest-neighbor with wrapping)
-                    int tx = (int)(u_row * TEX_WIDTH) % TEX_WIDTH;
-                    int ty = (int)(v_row * TEX_HEIGHT) % TEX_HEIGHT;
-                    if (tx < 0) tx += TEX_WIDTH;
-                    if (ty < 0) ty += TEX_HEIGHT;
+                    // Sample texture (u_row/v_row are pre-multiplied by texture size)
+                    // Use bit masking for wrapping (TEX_WIDTH/HEIGHT must be power of 2)
+                    int tx = (int)u_row & (TEX_WIDTH - 1);
+                    int ty = (int)v_row & (TEX_HEIGHT - 1);
 
-                    int tidx = (ty * TEX_WIDTH + tx) * 3;
+                    int tidx = ty * (TEX_WIDTH * 3) + tx * 3;  // Row-major RGB texture
                     int r = texture_data[tidx + 0];
                     int g = texture_data[tidx + 1];
                     int b = texture_data[tidx + 2];
@@ -491,14 +490,18 @@ static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, i
     job->z_dy = (b1f * z0 + b2f * z1 + b0f * z2) * job->inv_det;
     job->z_c  = (c1f * z0 + c2f * z1 + c0f * z2) * job->inv_det;
 
-    // U interpolation
-    float u0 = cube_uvs[face_idx][0].x, u1 = cube_uvs[face_idx][1].x, u2 = cube_uvs[face_idx][2].x;
+    // U interpolation (pre-multiplied by TEX_WIDTH for direct pixel coords)
+    float u0 = cube_uvs[face_idx][0].x * TEX_WIDTH;
+    float u1 = cube_uvs[face_idx][1].x * TEX_WIDTH;
+    float u2 = cube_uvs[face_idx][2].x * TEX_WIDTH;
     job->u_dx = (a1f * u0 + a2f * u1 + a0f * u2) * job->inv_det;
     job->u_dy = (b1f * u0 + b2f * u1 + b0f * u2) * job->inv_det;
     job->u_c  = (c1f * u0 + c2f * u1 + c0f * u2) * job->inv_det;
 
-    // V interpolation
-    float v0 = cube_uvs[face_idx][0].y, v1 = cube_uvs[face_idx][1].y, v2 = cube_uvs[face_idx][2].y;
+    // V interpolation (pre-multiplied by TEX_HEIGHT for direct pixel coords)
+    float v0 = cube_uvs[face_idx][0].y * TEX_HEIGHT;
+    float v1 = cube_uvs[face_idx][1].y * TEX_HEIGHT;
+    float v2 = cube_uvs[face_idx][2].y * TEX_HEIGHT;
     job->v_dx = (a1f * v0 + a2f * v1 + a0f * v2) * job->inv_det;
     job->v_dy = (b1f * v0 + b2f * v1 + b0f * v2) * job->inv_det;
     job->v_c  = (c1f * v0 + c2f * v1 + c0f * v2) * job->inv_det;
