@@ -14,11 +14,9 @@ make monitor    # View debug output via USB
 
 ## Controls
 
-- **Space** - Save screenshot to SD card (PPM format in `/sd/cube_screenshot_XXX.ppm`)
 - **ESC** - Return to launcher
 - **Power button** - Return to launcher
-
-Note: SD card must be inserted for screenshots to work.
+- **Space** - Save screenshot to SD card (requires `CAVAC_DEBUG`, see below)
 
 ## Architecture
 
@@ -35,9 +33,17 @@ Note: SD card must be inserted for screenshots to work.
 - `main/renderer.c` - Pure C 3D renderer with cube geometry and dual-core parallelization
 - `main/renderer.h` - Renderer API (renderer_init, renderer_render_frame)
 - `main/texture_data.h` - Embedded texture (64x64 RGB, wooden crate)
-- `main/sdcard.c` - SD card initialization (SPI mode) and mounting
-- `main/sdcard.h` - SD card API
+- `main/sdcard.c` - SD card initialization (SPI mode) and mounting (debug only)
+- `main/sdcard.h` - SD card API (debug only)
 - `main/usb_device.c` - USB debug console initialization for ESP32-P4
+
+## Debug Mode
+
+Screenshot functionality is disabled by default. To enable it, uncomment `#define CAVAC_DEBUG` in `main/main.c`. This enables:
+- SD card initialization and mounting
+- Space key to save screenshots as PPM files to `/sd/cube_screenshot_XXX.ppm`
+
+Note: SD card must be inserted for screenshots to work. Disabling debug mode reduces binary size by ~107KB.
 
 ## Renderer Details
 
