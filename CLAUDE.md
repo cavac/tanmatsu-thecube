@@ -48,14 +48,20 @@ Synchronization uses FreeRTOS binary semaphores with frame-level sync (one sync 
 
 ## Performance
 
-Typical frame timing (~16 fps):
-- Render: ~63ms (dual-core rasterization)
+Typical frame timing (~19 fps):
+- Render: ~52ms (dual-core rasterization)
 - Blit: ~0.5ms (DMA to display)
+
+### Optimization History
+- Original single-core with float z-buffer: ~9 fps
+- After eliminating intermediate copy: ~12 fps
+- After dual-core parallelization: ~16 fps
+- After 16-bit z-buffer optimization: ~19 fps
 
 ## Memory Considerations
 
 This project is tight on internal SRAM. Large buffers must be allocated from PSRAM:
-- `zbuffer` (921KB) - float array for depth testing, allocated via heap_caps_malloc(..., MALLOC_CAP_SPIRAM)
+- `zbuffer` (460KB) - int16_t array for depth testing, allocated via heap_caps_malloc(..., MALLOC_CAP_SPIRAM)
 
 The renderer writes directly to the PAX graphics library framebuffer with stride support, eliminating the need for an intermediate render buffer.
 

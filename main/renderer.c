@@ -22,6 +22,10 @@ static const char* TAG = "renderer";
 #define NUM_CUBE_VERTS 8
 #define NUM_CUBE_FACES 12
 
+// Fixed-point scale (16.16 format)
+#define FP_SHIFT 16
+#define FP_ONE (1 << FP_SHIFT)
+
 // 3D Vector types
 typedef struct { float x, y, z; } vec3f;
 typedef struct { float x, y, z, w; } vec4f;
@@ -57,8 +61,10 @@ static mat4f ModelView;
 static mat4f Perspective;
 static mat4f Viewport;
 
-// Z-buffer
-static float* zbuffer = NULL;
+// Z-buffer (16-bit fixed point for faster comparisons)
+// Z values scaled from [-1, 1] to [INT16_MIN, INT16_MAX]
+static int16_t* zbuffer = NULL;
+#define Z_SCALE 32767.0f
 
 // Current framebuffer pointer and stride (set per frame)
 static uint8_t* current_framebuffer = NULL;
@@ -69,13 +75,13 @@ static int current_stride = 0;
 
 // Job data for parallel rasterization (single triangle)
 typedef struct {
-    vec2f screen[3];      // Screen coordinates
-    vec4f ndc[3];         // NDC coordinates for z interpolation
-    float inv_det;        // Precomputed 1/determinant
-    int intensity;        // Flat shading intensity
-    int xmin, xmax;       // Bounding box
-    int ymin, ymax;
-    bool valid;           // Whether this triangle passed culling
+    vec2f screen[3];       // Screen coordinates
+    float ndc_z[3];        // NDC z values for depth interpolation
+    float inv_det;         // 1/det for barycentric normalization
+    uint8_t intensity;     // Flat shading intensity
+    int16_t xmin, xmax;    // Bounding box
+    int16_t ymin, ymax;
+    bool valid;            // Whether this triangle passed culling
 } RasterJob;
 
 // Frame job - contains all triangles for the frame
@@ -195,26 +201,30 @@ static inline void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
 // Rasterize a portion of a triangle (columns from x_start to x_end)
 static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
     const vec2f* screen = job->screen;
-    const vec4f* ndc = job->ndc;
-    float inv_det = job->inv_det;
-    uint8_t intensity = (uint8_t)job->intensity;
+    const float* ndc_z = job->ndc_z;
+    const float inv_det = job->inv_det;
+    const uint8_t intensity = job->intensity;
 
     // Clamp x range to triangle bounding box
     int xmin = (x_start > job->xmin) ? x_start : job->xmin;
     int xmax = (x_end < job->xmax) ? x_end : job->xmax;
 
-    for (int y = job->ymin; y <= job->ymax; y++) {
-        for (int x = xmin; x <= xmax; x++) {
-            // Compute barycentric coordinates
-            float px = (float)x;
-            float py = (float)y;
+    if (xmin > xmax) return;
 
-            float w0 = ((screen[1].x - screen[0].x) * (py - screen[0].y) -
-                        (screen[1].y - screen[0].y) * (px - screen[0].x));
-            float w1 = ((screen[2].x - screen[1].x) * (py - screen[1].y) -
-                        (screen[2].y - screen[1].y) * (px - screen[1].x));
-            float w2 = ((screen[0].x - screen[2].x) * (py - screen[2].y) -
-                        (screen[0].y - screen[2].y) * (px - screen[2].x));
+    for (int y = job->ymin; y <= job->ymax; y++) {
+        float py = (float)y;
+        int zidx_base = y * WIDTH;
+
+        for (int x = xmin; x <= xmax; x++) {
+            float px = (float)x;
+
+            // Compute barycentric coordinates using edge functions
+            float w0 = (screen[1].x - screen[0].x) * (py - screen[0].y) -
+                       (screen[1].y - screen[0].y) * (px - screen[0].x);
+            float w1 = (screen[2].x - screen[1].x) * (py - screen[1].y) -
+                       (screen[2].y - screen[1].y) * (px - screen[1].x);
+            float w2 = (screen[0].x - screen[2].x) * (py - screen[2].y) -
+                       (screen[0].y - screen[2].y) * (px - screen[2].x);
 
             // Check if inside triangle
             if (w0 >= 0 && w1 >= 0 && w2 >= 0) {
@@ -224,12 +234,13 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
                 float bc2 = w0 * inv_det;
 
                 // Interpolate z
-                float z = bc0 * ndc[0].z + bc1 * ndc[1].z + bc2 * ndc[2].z;
+                float z = bc0 * ndc_z[0] + bc1 * ndc_z[1] + bc2 * ndc_z[2];
+                int16_t z16 = (int16_t)(z * Z_SCALE);
 
                 // Z-buffer test
-                int zidx = x + y * WIDTH;
-                if (z > zbuffer[zidx]) {
-                    zbuffer[zidx] = z;
+                int zidx = zidx_base + x;
+                if (z16 > zbuffer[zidx]) {
+                    zbuffer[zidx] = z16;
                     set_pixel(x, y, intensity, intensity, intensity);
                 }
             }
@@ -313,17 +324,18 @@ static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, R
     if (xmax >= WIDTH) xmax = WIDTH - 1;
     if (ymax >= HEIGHT) ymax = HEIGHT - 1;
 
-    // Fill job data
+    // Store screen coordinates
     for (int i = 0; i < 3; i++) {
         job->screen[i] = screen[i];
-        job->ndc[i] = ndc[i];
+        job->ndc_z[i] = ndc[i].z;
     }
+
     job->inv_det = 1.0f / det;
-    job->intensity = intensity;
-    job->xmin = xmin;
-    job->xmax = xmax;
-    job->ymin = ymin;
-    job->ymax = ymax;
+    job->intensity = (uint8_t)intensity;
+    job->xmin = (int16_t)xmin;
+    job->xmax = (int16_t)xmax;
+    job->ymin = (int16_t)ymin;
+    job->ymax = (int16_t)ymax;
     job->valid = true;
 
     return true;
@@ -331,11 +343,13 @@ static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, R
 
 void renderer_init(void) {
     // Allocate z-buffer from PSRAM to save internal RAM
+    // Using int16_t instead of float for faster comparisons (half the memory too)
     if (zbuffer == NULL) {
-        zbuffer = (float*)heap_caps_malloc(WIDTH * HEIGHT * sizeof(float), MALLOC_CAP_SPIRAM);
+        zbuffer = (int16_t*)heap_caps_malloc(WIDTH * HEIGHT * sizeof(int16_t), MALLOC_CAP_SPIRAM);
         if (zbuffer == NULL) {
-            zbuffer = (float*)malloc(WIDTH * HEIGHT * sizeof(float));
+            zbuffer = (int16_t*)malloc(WIDTH * HEIGHT * sizeof(int16_t));
         }
+        ESP_LOGI(TAG, "Z-buffer: %d KB (int16)", (int)(WIDTH * HEIGHT * sizeof(int16_t) / 1024));
     }
 
     // Create semaphores for parallel rendering
@@ -382,10 +396,9 @@ void renderer_render_frame(unsigned char* framebuffer, int stride, int frame_num
         }
     }
 
-    // Clear z-buffer
-    for (int i = 0; i < WIDTH * HEIGHT; i++) {
-        zbuffer[i] = -1000.0f;
-    }
+    // Clear z-buffer using memset (set all bytes to 0x80 = INT16_MIN-ish)
+    // This sets each int16_t to 0x8080 = -32640, close enough to minimum
+    memset(zbuffer, 0x80, WIDTH * HEIGHT * sizeof(int16_t));
 
     // Animate camera position
     float t = (float)frame_number;
