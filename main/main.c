@@ -24,6 +24,7 @@
 #include "portmacro.h"
 #include "renderer.h"
 #include "usb_device.h"
+#include "sdcard.h"
 
 // External ST7701 color format function (from esp32-component-mipi-dsi-abstraction)
 extern esp_err_t st7701_set_color_format(lcd_color_rgb_pixel_format_t format);
@@ -46,6 +47,56 @@ void blit(void) {
 }
 
 static const char* TAG = "cube";
+static int screenshot_counter = 0;
+static int64_t last_screenshot_time = 0;
+#define SCREENSHOT_DEBOUNCE_MS 500
+
+// Save framebuffer as PPM image to SD card
+// PPM is a simple format: "P6\nwidth height\n255\n" followed by raw RGB data
+static void save_screenshot(void) {
+    // Debounce - ignore if called too soon after last screenshot
+    int64_t now = esp_timer_get_time();
+    if (now - last_screenshot_time < SCREENSHOT_DEBOUNCE_MS * 1000) {
+        return;
+    }
+    last_screenshot_time = now;
+
+    if (!sdcard_is_mounted()) {
+        ESP_LOGW(TAG, "SD card not mounted, cannot save screenshot");
+        return;
+    }
+
+    char filename[64];
+    snprintf(filename, sizeof(filename), "/sd/cube_screenshot_%03d.ppm", screenshot_counter++);
+
+    FILE* f = fopen(filename, "wb");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file for writing: %s", filename);
+        return;
+    }
+
+    // Write PPM header
+    fprintf(f, "P6\n%zu %zu\n255\n", display_h_res, display_v_res);
+
+    // Get framebuffer pointer
+    uint8_t* pixels = (uint8_t*)pax_buf_get_pixels(&fb);
+
+    // Write pixels (convert BGR to RGB for PPM format)
+    for (size_t y = 0; y < display_v_res; y++) {
+        for (size_t x = 0; x < display_h_res; x++) {
+            int idx = (y * display_h_res + x) * 3;
+            uint8_t b = pixels[idx + 0];
+            uint8_t g = pixels[idx + 1];
+            uint8_t r = pixels[idx + 2];
+            fputc(r, f);
+            fputc(g, f);
+            fputc(b, f);
+        }
+    }
+
+    fclose(f);
+    ESP_LOGI(TAG, "Screenshot saved: %s", filename);
+}
 
 #define BLACK 0xFF000000
 #define WHITE 0xFFFFFFFF
@@ -76,6 +127,12 @@ void app_main(void) {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     };
     bsp_led_write(led_data, sizeof(led_data));
+
+    // Initialize SD card for screenshots
+    res = sdcard_init();
+    if (res != ESP_OK) {
+        ESP_LOGW(TAG, "SD card init failed - screenshots disabled");
+    }
 
     // Get display parameters and rotation
     res = bsp_display_get_parameters(&display_h_res, &display_v_res, &display_color_format, &display_data_endian);
@@ -159,7 +216,19 @@ void app_main(void) {
     while(1) {
         bsp_input_event_t event;
         if (xQueueReceive(input_event_queue, &event, delay) == pdTRUE) {
-            bsp_device_restart_to_launcher();
+            // Only use KEYBOARD events for screenshot (fires once on key press)
+            if (event.type == INPUT_EVENT_TYPE_KEYBOARD) {
+                if (event.args_keyboard.ascii == ' ') {
+                    save_screenshot();
+                } else if (event.args_keyboard.ascii == 27) {
+                    // ESC returns to launcher
+                    bsp_device_restart_to_launcher();
+                }
+            } else if (event.type == INPUT_EVENT_TYPE_ACTION) {
+                // Action events (like power button) return to launcher
+                bsp_device_restart_to_launcher();
+            }
+            // Ignore SCANCODE and NAVIGATION events
         }
 
         int64_t t_start, t_end;

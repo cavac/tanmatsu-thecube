@@ -3,9 +3,16 @@ idf_component_register(
 		"main.c"
 		"renderer.c"
 		"usb_device.c"
+		"sdcard.c"
 	PRIV_REQUIRES
 		esp_lcd
 		badge-bsp
+		fatfs
+		sdmmc
+		esp_driver_sdmmc
+		esp_driver_sdspi
+		esp_driver_spi
+		vfs
 	INCLUDE_DIRS
 		"."
 )
