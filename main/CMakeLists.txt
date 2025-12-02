@@ -2,6 +2,7 @@ idf_component_register(
 	SRCS
 		"main.c"
 		"renderer.c"
+		"usb_device.c"
 	PRIV_REQUIRES
 		esp_lcd
 		badge-bsp
