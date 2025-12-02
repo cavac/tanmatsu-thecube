@@ -24,7 +24,12 @@
 #include "portmacro.h"
 #include "renderer.h"
 #include "usb_device.h"
+
+// #define CAVAC_DEBUG
+
+#ifdef CAVAC_DEBUG
 #include "sdcard.h"
+#endif
 
 // External ST7701 color format function (from esp32-component-mipi-dsi-abstraction)
 extern esp_err_t st7701_set_color_format(lcd_color_rgb_pixel_format_t format);
@@ -47,6 +52,8 @@ void blit(void) {
 }
 
 static const char* TAG = "cube";
+
+#ifdef CAVAC_DEBUG
 static int screenshot_counter = 0;
 static int64_t last_screenshot_time = 0;
 #define SCREENSHOT_DEBOUNCE_MS 500
@@ -97,6 +104,7 @@ static void save_screenshot(void) {
     fclose(f);
     ESP_LOGI(TAG, "Screenshot saved: %s", filename);
 }
+#endif
 
 #define BLACK 0xFF000000
 #define WHITE 0xFFFFFFFF
@@ -128,11 +136,13 @@ void app_main(void) {
     };
     bsp_led_write(led_data, sizeof(led_data));
 
+#ifdef CAVAC_DEBUG
     // Initialize SD card for screenshots
     res = sdcard_init();
     if (res != ESP_OK) {
         ESP_LOGW(TAG, "SD card init failed - screenshots disabled");
     }
+#endif
 
     // Get display parameters and rotation
     res = bsp_display_get_parameters(&display_h_res, &display_v_res, &display_color_format, &display_data_endian);
@@ -216,12 +226,15 @@ void app_main(void) {
     while(1) {
         bsp_input_event_t event;
         if (xQueueReceive(input_event_queue, &event, delay) == pdTRUE) {
+#ifdef CAVAC_DEBUG
             // KEYBOARD events for screenshot (fires once per character)
             if (event.type == INPUT_EVENT_TYPE_KEYBOARD) {
                 if (event.args_keyboard.ascii == ' ') {
                     save_screenshot();
                 }
-            } else if (event.type == INPUT_EVENT_TYPE_SCANCODE) {
+            } else
+#endif
+            if (event.type == INPUT_EVENT_TYPE_SCANCODE) {
                 // ESC via scancode returns to launcher
                 if (event.args_scancode.scancode == BSP_INPUT_SCANCODE_ESC) {
                     bsp_device_restart_to_launcher();
