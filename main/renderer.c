@@ -54,8 +54,9 @@ static mat4f Viewport;
 // Z-buffer
 static float* zbuffer = NULL;
 
-// Framebuffer (internal)
-static uint8_t* framebuffer = NULL;
+// Current framebuffer pointer and stride (set per frame)
+static uint8_t* current_framebuffer = NULL;
+static int current_stride = 0;
 
 // Vector operations
 static inline vec3f vec3f_sub(vec3f a, vec3f b) {
@@ -148,13 +149,13 @@ static void setup_viewport(int x, int y, int w, int h) {
     Viewport.m[1][3] = y + h / 2.0f;
 }
 
-// Set pixel in framebuffer (RGB888)
+// Set pixel in framebuffer (RGB888) using current_stride
 static inline void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) {
-        int idx = (y * WIDTH + x) * 3;
-        framebuffer[idx + 0] = r;
-        framebuffer[idx + 1] = g;
-        framebuffer[idx + 2] = b;
+        int idx = y * current_stride + x * 3;
+        current_framebuffer[idx + 0] = r;
+        current_framebuffer[idx + 1] = g;
+        current_framebuffer[idx + 2] = b;
     }
 }
 
@@ -244,27 +245,29 @@ static void rasterize_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir)
 }
 
 void renderer_init(void) {
-    // Allocate from PSRAM to save internal RAM
+    // Allocate z-buffer from PSRAM to save internal RAM
     if (zbuffer == NULL) {
         zbuffer = (float*)heap_caps_malloc(WIDTH * HEIGHT * sizeof(float), MALLOC_CAP_SPIRAM);
         if (zbuffer == NULL) {
             zbuffer = (float*)malloc(WIDTH * HEIGHT * sizeof(float));
         }
     }
-    if (framebuffer == NULL) {
-        framebuffer = (uint8_t*)heap_caps_malloc(WIDTH * HEIGHT * 3, MALLOC_CAP_SPIRAM);
-        if (framebuffer == NULL) {
-            framebuffer = (uint8_t*)malloc(WIDTH * HEIGHT * 3);
-        }
-    }
+    // Note: Framebuffer is now passed in externally, no allocation needed
 }
 
-void renderer_render_frame(unsigned char* output_rgb, int frame_number) {
-    // Clear framebuffer with sky blue background
-    for (int i = 0; i < WIDTH * HEIGHT; i++) {
-        framebuffer[i * 3 + 0] = 209;  // R (sky blue)
-        framebuffer[i * 3 + 1] = 195;  // G
-        framebuffer[i * 3 + 2] = 177;  // B
+void renderer_render_frame(unsigned char* framebuffer, int stride, int frame_number) {
+    // Store framebuffer and stride for use by set_pixel
+    current_framebuffer = framebuffer;
+    current_stride = stride;
+
+    // Clear framebuffer with sky blue background (only the 480-pixel wide render area)
+    for (int y = 0; y < HEIGHT; y++) {
+        uint8_t* row = framebuffer + y * stride;
+        for (int x = 0; x < WIDTH; x++) {
+            row[x * 3 + 0] = 209;  // R (sky blue)
+            row[x * 3 + 1] = 195;  // G
+            row[x * 3 + 2] = 177;  // B
+        }
     }
 
     // Clear z-buffer
@@ -325,7 +328,5 @@ void renderer_render_frame(unsigned char* output_rgb, int frame_number) {
 
         rasterize_triangle(clip, tri_eye, light_dir);
     }
-
-    // Copy to output
-    memcpy(output_rgb, framebuffer, WIDTH * HEIGHT * 3);
+    // Rendering is done directly to the passed framebuffer, no copy needed
 }
