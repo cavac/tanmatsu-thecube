@@ -133,12 +133,10 @@ void app_main(void) {
     // Initialize 3D cube renderer
     renderer_init();
     static int frame_number = 0;
-    // Allocate cube buffer from PSRAM to save internal RAM
-    uint8_t* cube_buffer = (uint8_t*)heap_caps_malloc(480 * 480 * 3, MALLOC_CAP_SPIRAM);
-    if (cube_buffer == NULL) {
-        // Fallback to regular malloc if PSRAM not available
-        cube_buffer = (uint8_t*)malloc(480 * 480 * 3);
-    }
+
+    // Calculate framebuffer offset and stride for direct rendering
+    int x_offset = (display_h_res - 480) / 2;
+    int fb_stride = display_h_res * 3;  // RGB888 = 3 bytes per pixel
 
     uint32_t delay = pdMS_TO_TICKS(1);  // 1ms timeout for responsive input
     // Draw black background
@@ -166,25 +164,18 @@ void app_main(void) {
 
         int64_t t_start, t_end;
 
-        // DRAW 3D CUBE INTO SCREEN BUFFER
+        // Get pointer to PAX framebuffer with offset for centered cube
+        uint8_t* fb_pixels = (uint8_t*)pax_buf_get_pixels(&fb);
+        uint8_t* render_target = fb_pixels + x_offset * 3;
+
+        // DRAW 3D CUBE DIRECTLY INTO SCREEN BUFFER
         t_start = esp_timer_get_time();
-        renderer_render_frame(cube_buffer, frame_number++);
+        renderer_render_frame(render_target, fb_stride, frame_number++);
         t_end = esp_timer_get_time();
         render_time_sum += (t_end - t_start);
 
-        // Copy rendered cube to screen buffer (centered with black bars)
-        t_start = esp_timer_get_time();
-        int x_offset = (display_h_res - 480) / 2;
-        uint8_t* fb_pixels = (uint8_t*)pax_buf_get_pixels(&fb);
-        int fb_stride = display_h_res * 3;  // RGB888 = 3 bytes per pixel
-
-        for (int y = 0; y < 480; y++) {
-            uint8_t* src = cube_buffer + y * 480 * 3;
-            uint8_t* dst = fb_pixels + y * fb_stride + x_offset * 3;
-            memcpy(dst, src, 480 * 3);
-        }
-        t_end = esp_timer_get_time();
-        copy_time_sum += (t_end - t_start);
+        // Copy step eliminated - renderer writes directly to framebuffer
+        copy_time_sum += 0;
 
         // Blit to display
         t_start = esp_timer_get_time();
