@@ -50,7 +50,7 @@ Note: SD card must be inserted for screenshots to work. Disabling debug mode red
 The renderer implements:
 - 4x4 matrix transformations (lookat, perspective, viewport, rotation)
 - Cube rotation on X, Y, Z axes at different speeds (fixed camera/light)
-- Barycentric coordinate interpolation for UV and depth
+- Incremental attribute interpolation for UV and depth (fixed-point, no per-pixel floats)
 - Texture mapping with nearest-neighbor sampling
 - Z-buffer depth testing (16-bit with z-clamping to prevent overflow)
 - Diffuse lighting (modulates texture color)
@@ -72,8 +72,8 @@ Synchronization uses FreeRTOS binary semaphores with frame-level sync (one sync 
 
 ## Performance
 
-Typical frame timing (~19 fps):
-- Render: ~52ms (dual-core rasterization)
+Typical frame timing (~23 fps):
+- Render: ~42ms (dual-core rasterization)
 - Blit: ~0.5ms (DMA to display)
 
 ### Optimization History
@@ -81,6 +81,18 @@ Typical frame timing (~19 fps):
 - After eliminating intermediate copy: ~12 fps
 - After dual-core parallelization: ~16 fps
 - After 16-bit z-buffer optimization: ~19 fps
+- After incremental integer edge evaluation: ~18 fps
+- After incremental attribute interpolation: ~23 fps
+
+### Rasterization Optimizations
+
+The inner loop uses a hybrid integer/float approach:
+
+**Incremental Edge Evaluation (Integer)**: Edge functions are computed once at the start of each scanline using integer arithmetic, then incremented per pixel (w += a) instead of full evaluation. This provides fast inside/outside triangle testing.
+
+**Incremental Attribute Interpolation (Float)**: Z-depth and UV coordinates use precomputed dx/dy gradients per triangle. At each scanline start, initial values are computed, then incremented per pixel. Float is used to avoid fixed-point overflow issues with large screen coordinates.
+
+**Texture Sampling**: UV values are pre-multiplied by texture dimensions. Texture coordinate wrapping uses bit masking (& 63) instead of modulo.
 
 ### Build Optimizations
 
@@ -91,9 +103,9 @@ The following ESP-IDF settings are enabled in `sdkconfigs/tanmatsu`:
 
 ### Future Optimization Opportunities
 
-- **Fixed-point rasterization**: Converting float math to fixed-point could improve performance, but requires careful handling of overflow (screen coordinates * fixed-point scale can exceed int32 range). Would need 64-bit intermediates or reduced precision.
-- **PIE SIMD instructions**: ESP32-P4's PIE extension could accelerate z-buffer operations with 128-bit vector instructions (8x int16 per operation). Requires inline assembly.
-- **Scanline-based rendering**: Process pixels in groups of 8 for SIMD-friendly memory access patterns.
+- **PIE SIMD instructions**: ESP32-P4's PIE extension could accelerate z-buffer comparisons and pixel writes with 128-bit vector instructions (8x int16 per operation). Requires inline assembly.
+- **SIMD attribute interpolation**: Process 4 or 8 pixels at once using PIE vector operations for edge tests and attribute increments.
+- **PPA (Pixel Processing Accelerator)**: ESP32-P4's hardware pixel processor could potentially accelerate texture sampling or color blending.
 
 ## Memory Considerations
 

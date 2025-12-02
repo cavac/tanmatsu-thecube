@@ -118,13 +118,12 @@ typedef struct {
     int32_t edge_b[3];     // B coefficient: (x[j] - x[i]) as integer
     int32_t edge_c[3];     // C coefficient: x[i]*y[j] - x[j]*y[i] as integer
 
-    // Incremental attribute interpolation
+    // Incremental attribute interpolation (float)
     // Attr = (w1*A0 + w2*A1 + w0*A2) / det
     // dAttr/dx = (a1*A0 + a2*A1 + a0*A2) / det (constant per triangle)
-    float z_dx, z_dy;      // Z interpolation increments
-    float u_dx, u_dy;      // U interpolation increments
-    float v_dx, v_dy;      // V interpolation increments
-    float z_c, u_c, v_c;   // Constant terms for interpolation at origin
+    float z_dx, z_dy, z_c;   // Z (scaled by Z_SCALE)
+    float u_dx, u_dy, u_c;   // U (pre-multiplied by TEX_WIDTH)
+    float v_dx, v_dy, v_c;   // V (pre-multiplied by TEX_HEIGHT)
 } RasterJob;
 
 // Frame job - contains all triangles for the frame
@@ -281,7 +280,7 @@ static inline void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
 #define EDGE_EPSILON_INT (-1)
 
 // Rasterize a portion of a triangle (columns from x_start to x_end)
-// Uses incremental edge evaluation and attribute interpolation
+// Uses incremental edge evaluation and float attribute interpolation
 static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
     const int intensity = job->intensity;
 
@@ -290,7 +289,7 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
     const int32_t a1 = job->edge_a[1], b1 = job->edge_b[1], c1 = job->edge_c[1];
     const int32_t a2 = job->edge_a[2], b2 = job->edge_b[2], c2 = job->edge_c[2];
 
-    // Get attribute interpolation coefficients
+    // Get float attribute interpolation coefficients
     const float z_dx = job->z_dx, z_dy = job->z_dy, z_c = job->z_c;
     const float u_dx = job->u_dx, u_dy = job->u_dy, u_c = job->u_c;
     const float v_dx = job->v_dx, v_dy = job->v_dy, v_c = job->v_c;
@@ -310,32 +309,29 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
         int32_t w1 = a1 * xmin + b1 * y + c1;
         int32_t w2 = a2 * xmin + b2 * y + c2;
 
-        // Compute attributes at start of scanline using linear interpolation
-        // Attr(x,y) = Attr_dx * x + Attr_dy * y + Attr_c
-        float fy = (float)y;
-        float z_row = z_dx * xmin + z_dy * fy + z_c;
-        float u_row = u_dx * xmin + u_dy * fy + u_c;
-        float v_row = v_dx * xmin + v_dy * fy + v_c;
+        // Compute attributes at start of scanline (float)
+        float z_row = z_dx * xmin + z_dy * y + z_c;
+        float u_row = u_dx * xmin + u_dy * y + u_c;
+        float v_row = v_dx * xmin + v_dy * y + v_c;
 
         for (int x = xmin; x <= xmax; x++) {
             // Check if inside triangle (all edge functions >= 0)
             if (w0 >= EDGE_EPSILON_INT && w1 >= EDGE_EPSILON_INT && w2 >= EDGE_EPSILON_INT) {
-                // Clamp z to [-1, 1] range before scaling to int16
-                float z = z_row;
-                if (z < -1.0f) z = -1.0f;
-                if (z > 1.0f) z = 1.0f;
-                int16_t z16 = (int16_t)(z * Z_SCALE);
+                // Clamp z to int16 range
+                int16_t z16;
+                if (z_row < -32767.0f) z16 = -32767;
+                else if (z_row > 32767.0f) z16 = 32767;
+                else z16 = (int16_t)z_row;
 
                 // Z-buffer test
                 if (z16 >= zbuf_row[x]) {
                     zbuf_row[x] = z16;
 
-                    // Sample texture (u_row/v_row are pre-multiplied by texture size)
-                    // Use bit masking for wrapping (TEX_WIDTH/HEIGHT must be power of 2)
-                    int tx = (int)u_row & (TEX_WIDTH - 1);
-                    int ty = (int)v_row & (TEX_HEIGHT - 1);
+                    // Sample texture (u/v are pre-multiplied by texture size)
+                    int tx = ((int)u_row) & (TEX_WIDTH - 1);
+                    int ty = ((int)v_row) & (TEX_HEIGHT - 1);
 
-                    int tidx = ty * (TEX_WIDTH * 3) + tx * 3;  // Row-major RGB texture
+                    int tidx = ty * (TEX_WIDTH * 3) + tx * 3;
                     int r = texture_data[tidx + 0];
                     int g = texture_data[tidx + 1];
                     int b = texture_data[tidx + 2];
@@ -345,7 +341,7 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
                     g = (g * intensity) >> 8;
                     b = (b * intensity) >> 8;
 
-                    // Write pixel directly (BGR order, inlined for speed)
+                    // Write pixel directly (BGR order)
                     int pidx = x * 3;
                     fb_row[pidx + 0] = (uint8_t)b;
                     fb_row[pidx + 1] = (uint8_t)g;
@@ -353,7 +349,7 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
                 }
             }
 
-            // Increment edge functions and attributes for next pixel
+            // Increment edge functions (integer) and attributes (float)
             w0 += a0;
             w1 += a1;
             w2 += a2;
@@ -472,39 +468,41 @@ static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, i
         job->edge_c[i] = sx[i] * sy[j] - sx[j] * sy[i];    // C = x[i]*y[j] - x[j]*y[i]
     }
 
-    // Compute incremental attribute interpolation coefficients
+    // Compute determinant from INTEGER coordinates (must match edge coefficients)
+    // det = (x1-x0)*(y2-y0) - (x2-x0)*(y1-y0)
+    int32_t det_int = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sx[2] - sx[0]) * (sy[1] - sy[0]);
+    if (det_int == 0) det_int = 1;  // Avoid division by zero
+    float inv_det_attr = 1.0f / (float)det_int;
+
+    // Compute incremental attribute interpolation coefficients (fixed-point 16.16)
     // Attr(x,y) = (w1*A[0] + w2*A[1] + w0*A[2]) / det
     // where w_i = a_i*x + b_i*y + c_i
     // Expanding: Attr = Attr_dx * x + Attr_dy * y + Attr_c
-    // Attr_dx = (a1*A[0] + a2*A[1] + a0*A[2]) / det
-    // Attr_dy = (b1*A[0] + b2*A[1] + b0*A[2]) / det
-    // Attr_c  = (c1*A[0] + c2*A[1] + c0*A[2]) / det
     float a0f = (float)job->edge_a[0], a1f = (float)job->edge_a[1], a2f = (float)job->edge_a[2];
     float b0f = (float)job->edge_b[0], b1f = (float)job->edge_b[1], b2f = (float)job->edge_b[2];
     float c0f = (float)job->edge_c[0], c1f = (float)job->edge_c[1], c2f = (float)job->edge_c[2];
 
-    // Z interpolation (bc0->ndc_z[0], bc1->ndc_z[1], bc2->ndc_z[2])
-    // bc0 = w1/det, bc1 = w2/det, bc2 = w0/det
-    float z0 = ndc[0].z, z1 = ndc[1].z, z2 = ndc[2].z;
-    job->z_dx = (a1f * z0 + a2f * z1 + a0f * z2) * job->inv_det;
-    job->z_dy = (b1f * z0 + b2f * z1 + b0f * z2) * job->inv_det;
-    job->z_c  = (c1f * z0 + c2f * z1 + c0f * z2) * job->inv_det;
+    // Z interpolation (scaled by Z_SCALE)
+    float z0 = ndc[0].z * Z_SCALE, z1 = ndc[1].z * Z_SCALE, z2 = ndc[2].z * Z_SCALE;
+    job->z_dx = (a1f * z0 + a2f * z1 + a0f * z2) * inv_det_attr;
+    job->z_dy = (b1f * z0 + b2f * z1 + b0f * z2) * inv_det_attr;
+    job->z_c  = (c1f * z0 + c2f * z1 + c0f * z2) * inv_det_attr;
 
-    // U interpolation (pre-multiplied by TEX_WIDTH for direct pixel coords)
+    // U interpolation (pre-multiplied by TEX_WIDTH)
     float u0 = cube_uvs[face_idx][0].x * TEX_WIDTH;
     float u1 = cube_uvs[face_idx][1].x * TEX_WIDTH;
     float u2 = cube_uvs[face_idx][2].x * TEX_WIDTH;
-    job->u_dx = (a1f * u0 + a2f * u1 + a0f * u2) * job->inv_det;
-    job->u_dy = (b1f * u0 + b2f * u1 + b0f * u2) * job->inv_det;
-    job->u_c  = (c1f * u0 + c2f * u1 + c0f * u2) * job->inv_det;
+    job->u_dx = (a1f * u0 + a2f * u1 + a0f * u2) * inv_det_attr;
+    job->u_dy = (b1f * u0 + b2f * u1 + b0f * u2) * inv_det_attr;
+    job->u_c  = (c1f * u0 + c2f * u1 + c0f * u2) * inv_det_attr;
 
-    // V interpolation (pre-multiplied by TEX_HEIGHT for direct pixel coords)
+    // V interpolation (pre-multiplied by TEX_HEIGHT)
     float v0 = cube_uvs[face_idx][0].y * TEX_HEIGHT;
     float v1 = cube_uvs[face_idx][1].y * TEX_HEIGHT;
     float v2 = cube_uvs[face_idx][2].y * TEX_HEIGHT;
-    job->v_dx = (a1f * v0 + a2f * v1 + a0f * v2) * job->inv_det;
-    job->v_dy = (b1f * v0 + b2f * v1 + b0f * v2) * job->inv_det;
-    job->v_c  = (c1f * v0 + c2f * v1 + c0f * v2) * job->inv_det;
+    job->v_dx = (a1f * v0 + a2f * v1 + a0f * v2) * inv_det_attr;
+    job->v_dy = (b1f * v0 + b2f * v1 + b0f * v2) * inv_det_attr;
+    job->v_c  = (c1f * v0 + c2f * v1 + c0f * v2) * inv_det_attr;
 
     return true;
 }
