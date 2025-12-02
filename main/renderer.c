@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "renderer.h"
+#include "texture_data.h"
 
 static const char* TAG = "renderer";
 
@@ -56,6 +57,23 @@ static const int cube_faces[NUM_CUBE_FACES][3] = {
     {2, 3, 0}, {2, 0, 1},  // Back face (-Z)
 };
 
+// UV coordinates for each triangle (maps full texture to each face)
+// Two triangles per face form a quad: tri1=(0,0)-(1,0)-(1,1), tri2=(0,0)-(1,1)-(0,1)
+static const vec2f cube_uvs[NUM_CUBE_FACES][3] = {
+    // Right face (+X)
+    {{0, 1}, {1, 1}, {1, 0}}, {{0, 1}, {1, 0}, {0, 0}},
+    // Left face (-X)
+    {{0, 0}, {1, 0}, {1, 1}}, {{0, 0}, {1, 1}, {0, 1}},
+    // Top face (+Y)
+    {{1, 1}, {1, 0}, {0, 0}}, {{1, 1}, {0, 0}, {0, 1}},
+    // Bottom face (-Y)
+    {{0, 0}, {1, 0}, {1, 1}}, {{0, 0}, {1, 1}, {0, 1}},
+    // Front face (+Z)
+    {{1, 0}, {1, 1}, {0, 1}}, {{1, 0}, {0, 1}, {0, 0}},
+    // Back face (-Z)
+    {{0, 0}, {1, 0}, {1, 1}}, {{0, 0}, {1, 1}, {0, 1}},
+};
+
 // Global matrices
 static mat4f ModelView;
 static mat4f Perspective;
@@ -76,9 +94,10 @@ static int current_stride = 0;
 // Job data for parallel rasterization (single triangle)
 typedef struct {
     vec2f screen[3];       // Screen coordinates
+    vec2f uv[3];           // Texture coordinates
     float ndc_z[3];        // NDC z values for depth interpolation
     float inv_det;         // 1/det for barycentric normalization
-    uint8_t intensity;     // Flat shading intensity
+    uint8_t intensity;     // Lighting intensity (0-255)
     int16_t xmin, xmax;    // Bounding box
     int16_t ymin, ymax;
     bool valid;            // Whether this triangle passed culling
@@ -188,22 +207,23 @@ static void setup_viewport(int x, int y, int w, int h) {
     Viewport.m[1][3] = y + h / 2.0f;
 }
 
-// Set pixel in framebuffer (RGB888) using current_stride
+// Set pixel in framebuffer (BGR888 byte order) using current_stride
 static inline void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) {
         int idx = y * current_stride + x * 3;
-        current_framebuffer[idx + 0] = r;
+        current_framebuffer[idx + 0] = b;
         current_framebuffer[idx + 1] = g;
-        current_framebuffer[idx + 2] = b;
+        current_framebuffer[idx + 2] = r;
     }
 }
 
 // Rasterize a portion of a triangle (columns from x_start to x_end)
 static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
     const vec2f* screen = job->screen;
+    const vec2f* uv = job->uv;
     const float* ndc_z = job->ndc_z;
     const float inv_det = job->inv_det;
-    const uint8_t intensity = job->intensity;
+    const int intensity = job->intensity;
 
     // Clamp x range to triangle bounding box
     int xmin = (x_start > job->xmin) ? x_start : job->xmin;
@@ -241,7 +261,28 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
                 int zidx = zidx_base + x;
                 if (z16 > zbuffer[zidx]) {
                     zbuffer[zidx] = z16;
-                    set_pixel(x, y, intensity, intensity, intensity);
+
+                    // Interpolate UV coordinates
+                    float u = bc0 * uv[0].x + bc1 * uv[1].x + bc2 * uv[2].x;
+                    float v = bc0 * uv[0].y + bc1 * uv[1].y + bc2 * uv[2].y;
+
+                    // Sample texture (nearest-neighbor with wrapping)
+                    int tx = (int)(u * TEX_WIDTH) % TEX_WIDTH;
+                    int ty = (int)(v * TEX_HEIGHT) % TEX_HEIGHT;
+                    if (tx < 0) tx += TEX_WIDTH;
+                    if (ty < 0) ty += TEX_HEIGHT;
+
+                    int tidx = (ty * TEX_WIDTH + tx) * 3;
+                    int r = texture_data[tidx + 0];
+                    int g = texture_data[tidx + 1];
+                    int b = texture_data[tidx + 2];
+
+                    // Apply lighting (modulate texture by intensity)
+                    r = (r * intensity) >> 8;
+                    g = (g * intensity) >> 8;
+                    b = (b * intensity) >> 8;
+
+                    set_pixel(x, y, (uint8_t)r, (uint8_t)g, (uint8_t)b);
                 }
             }
         }
@@ -275,7 +316,7 @@ static void render_worker_task(void* arg) {
 }
 
 // Prepare triangle data for rasterization (returns false if culled)
-static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, RasterJob* job) {
+static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, int face_idx, RasterJob* job) {
     // Perspective divide to get NDC
     vec4f ndc[3];
     for (int i = 0; i < 3; i++) {
@@ -308,8 +349,8 @@ static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, R
     float diff = vec3f_dot(normal, light_dir);
     if (diff < 0.0f) diff = 0.0f;
 
-    // Compute color intensity (ambient + diffuse)
-    int intensity = (int)(30 + 225 * diff);
+    // Compute color intensity (ambient + diffuse, scaled for >> 8 in rasterizer)
+    int intensity = (int)(77 + 178 * diff);  // Range: 77-255 (30% ambient, 70% diffuse)
     if (intensity > 255) intensity = 255;
 
     // Bounding box
@@ -324,10 +365,11 @@ static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, R
     if (xmax >= WIDTH) xmax = WIDTH - 1;
     if (ymax >= HEIGHT) ymax = HEIGHT - 1;
 
-    // Store screen coordinates
+    // Store screen coordinates and UVs
     for (int i = 0; i < 3; i++) {
         job->screen[i] = screen[i];
         job->ndc_z[i] = ndc[i].z;
+        job->uv[i] = cube_uvs[face_idx][i];
     }
 
     job->inv_det = 1.0f / det;
@@ -386,13 +428,13 @@ void renderer_render_frame(unsigned char* framebuffer, int stride, int frame_num
     current_framebuffer = framebuffer;
     current_stride = stride;
 
-    // Clear framebuffer with sky blue background (only the 480-pixel wide render area)
+    // Clear framebuffer with sky blue background (BGR byte order)
     for (int y = 0; y < HEIGHT; y++) {
         uint8_t* row = framebuffer + y * stride;
         for (int x = 0; x < WIDTH; x++) {
-            row[x * 3 + 0] = 209;  // R (sky blue)
+            row[x * 3 + 0] = 177;  // B (sky blue)
             row[x * 3 + 1] = 195;  // G
-            row[x * 3 + 2] = 177;  // B
+            row[x * 3 + 2] = 209;  // R
         }
     }
 
@@ -455,7 +497,7 @@ void renderer_render_frame(unsigned char* framebuffer, int stride, int frame_num
         }
 
         // Prepare triangle data (handles backface culling)
-        prepare_triangle(clip, tri_eye, light_dir, &frame_job.triangles[f]);
+        prepare_triangle(clip, tri_eye, light_dir, f, &frame_job.triangles[f]);
     }
 
     // Check if parallel rendering is available
