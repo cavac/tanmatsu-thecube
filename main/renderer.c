@@ -217,6 +217,10 @@ static inline void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     }
 }
 
+// Small negative epsilon for edge test to handle floating-point rounding errors
+// This prevents pixels that should be exactly on an edge from being rejected
+#define EDGE_EPSILON -1e-4f
+
 // Rasterize a portion of a triangle (columns from x_start to x_end)
 static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
     const vec2f* screen = job->screen;
@@ -247,19 +251,28 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
                        (screen[0].y - screen[2].y) * (px - screen[2].x);
 
             // Check if inside triangle
-            if (w0 >= 0 && w1 >= 0 && w2 >= 0) {
-                // Normalize barycentric coordinates
+            if (w0 >= EDGE_EPSILON && w1 >= EDGE_EPSILON && w2 >= EDGE_EPSILON) {
+                // Compute barycentric coordinates
                 float bc0 = w1 * inv_det;
                 float bc1 = w2 * inv_det;
                 float bc2 = w0 * inv_det;
+
+                // Normalize to ensure bc0 + bc1 + bc2 = 1 (prevents z extrapolation errors)
+                float bc_sum = bc0 + bc1 + bc2;
+                if (bc_sum > 0.0f) {
+                    float inv_sum = 1.0f / bc_sum;
+                    bc0 *= inv_sum;
+                    bc1 *= inv_sum;
+                    bc2 *= inv_sum;
+                }
 
                 // Interpolate z
                 float z = bc0 * ndc_z[0] + bc1 * ndc_z[1] + bc2 * ndc_z[2];
                 int16_t z16 = (int16_t)(z * Z_SCALE);
 
-                // Z-buffer test
+                // Z-buffer test (use >= to handle coplanar triangles on same face)
                 int zidx = zidx_base + x;
-                if (z16 > zbuffer[zidx]) {
+                if (z16 >= zbuffer[zidx]) {
                     zbuffer[zidx] = z16;
 
                     // Interpolate UV coordinates
@@ -508,10 +521,10 @@ void renderer_render_frame(unsigned char* framebuffer, int stride, int frame_num
         // Wake up worker task to process right half of ALL triangles
         xSemaphoreGive(job_ready_sem);
 
-        // Process left half of ALL triangles on this core (columns 0-239)
+        // Process left half of ALL triangles on this core (columns 0 to 239)
         for (int i = 0; i < frame_job.num_triangles; i++) {
             if (frame_job.triangles[i].valid) {
-                rasterize_columns(&frame_job.triangles[i], 0, RENDER_SPLIT_X);
+                rasterize_columns(&frame_job.triangles[i], 0, RENDER_SPLIT_X - 1);
             }
         }
 
