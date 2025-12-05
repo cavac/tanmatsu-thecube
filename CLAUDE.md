@@ -21,11 +21,13 @@ make monitor    # View debug output via USB
 ## Architecture
 
 - **Pure C implementation** - No C++ dependencies to minimize binary size
-- **PSRAM allocation** - Large buffers (z-buffer) allocated from external PSRAM to save internal SRAM
+- **Internal SRAM allocation** - Z-buffer and texture in fast internal SRAM (not PSRAM)
 - **Software rasterization** - Triangle rasterization with z-buffer and texture mapping
 - **Dual-core rendering** - Rasterization split by columns between Core 0 and Core 1
 - **Direct framebuffer access** - Renderer writes directly to PAX framebuffer (no intermediate copy)
 - **BGR byte order** - Display framebuffer uses BGR888 format (not RGB)
+- **270° display rotation** - Display is internally rotated; coordinate transforms applied
+- **Vsync synchronization** - Tearing effect (TE) pin used for smooth animation
 
 ## Key Files
 
@@ -33,6 +35,7 @@ make monitor    # View debug output via USB
 - `main/renderer.c` - Pure C 3D renderer with cube geometry and dual-core parallelization
 - `main/renderer.h` - Renderer API (renderer_init, renderer_render_frame)
 - `main/texture_data.h` - Embedded texture (64x64 RGB, wooden crate)
+- `main/simple_font.h` - Fast 5x7 bitmap font for FPS display (rotation-aware)
 - `main/sdcard.c` - SD card initialization (SPI mode) and mounting (debug only)
 - `main/sdcard.h` - SD card API (debug only)
 - `main/usb_device.c` - USB debug console initialization for ESP32-P4
@@ -119,6 +122,20 @@ The following ESP-IDF settings are enabled in `sdkconfigs/tanmatsu`:
 - PPA supports: Scale, Rotate, Mirror (SRM), Alpha Blend, and Fill operations on rectangular image blocks
 - **Result**: Not applicable to software triangle rasterization
 - **Reason**: PPA operates on rectangular blocks with uniform transforms. Our texture mapping requires per-pixel UV lookups (arbitrary warp), triangles aren't rectangular, and PPA has no depth testing. PPA is designed for scaling camera frames or compositing UI layers, not 3D rendering.
+
+### Vsync Synchronization
+
+The display has a tearing effect (TE) pin that signals vertical blanking. Vsync is enabled via:
+```c
+bsp_display_set_tearing_effect_mode(BSP_DISPLAY_TE_V_BLANKING);
+bsp_display_get_tearing_effect_semaphore(&vsync_sem);
+```
+
+Before each blit, the main loop waits on the semaphore to synchronize with the display refresh. This eliminates animation stuttering/jumping that occurred without vsync.
+
+### Simple Bitmap Font
+
+PAX font rendering is too slow for real-time FPS display. A custom 5x7 bitmap font (`simple_font.h`) draws directly to the framebuffer with rotation compensation for the 270° display orientation. Supports digits 0-9, decimal point, space, and "fps" letters.
 
 ### Future Optimization Opportunities
 

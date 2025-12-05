@@ -24,6 +24,7 @@
 #include "portmacro.h"
 #include "renderer.h"
 #include "usb_device.h"
+#include "simple_font.h"
 
 //#define CAVAC_DEBUG
 
@@ -236,6 +237,7 @@ void app_main(void) {
     int64_t vsync_time_sum = 0;
     int64_t blit_time_sum = 0;
     int perf_frame_count = 0;
+    float current_fps = 0.0f;  // For on-screen display
 
     while(1) {
         bsp_input_event_t event;
@@ -268,6 +270,15 @@ void app_main(void) {
         // DRAW 3D CUBE DIRECTLY INTO SCREEN BUFFER
         t_start = esp_timer_get_time();
         renderer_render_frame(render_target, fb_stride, frame_number++);
+
+        // Draw FPS counter using fast bitmap font (within the 480x480 render area)
+        // Uses 270° rotated drawing to match display orientation
+        if (current_fps > 0) {
+            char fps_str[16];
+            snprintf(fps_str, sizeof(fps_str), "%.1f fps", current_fps);
+            font_draw_string_270(render_target, 480, 480, 5, 5, fps_str, 0, 0, 0);  // Black text
+        }
+
         t_end = esp_timer_get_time();
         render_time_sum += (t_end - t_start);
 
@@ -294,9 +305,10 @@ void app_main(void) {
             int64_t avg_blit = blit_time_sum / PERF_SAMPLE_FRAMES;
             int64_t avg_total = avg_render + avg_vsync + avg_blit;
 
+            current_fps = 1000000.0f / avg_total;
             ESP_LOGI(TAG, "Perf (avg %d frames): render=%lldus, vsync=%lldus, blit=%lldus, total=%lldus (%.1f fps)",
                      PERF_SAMPLE_FRAMES, avg_render, avg_vsync, avg_blit, avg_total,
-                     1000000.0 / avg_total);
+                     current_fps);
 
             // Reset counters
             render_time_sum = 0;
