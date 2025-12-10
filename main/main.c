@@ -113,6 +113,26 @@ static void save_screenshot(void) {
 
 #define PERF_SAMPLE_FRAMES 50
 
+// Fast direct buffer clear for right side black bar (screen x >= 480)
+// Screen is landscape 800x480, cube is 480x480 on the left
+// Buffer format: 800x480 RGB888, stride = 2400 bytes
+static void clear_right_bar(pax_buf_t* buf) {
+    uint8_t* pixels = (uint8_t*)pax_buf_get_pixels(buf);
+    int stride = display_h_res * 3;  // 800 * 3 = 2400 bytes per row
+    int linecount = display_v_res - 480 - 1;
+
+    // Clear screen columns 480-799 (right 320 pixels)
+    // Direct buffer access: column X at row Y = pixels + Y*stride + X*3
+    // This is a contiguous region of memory, so we can use a single memset, no need for a loop
+    /*
+    for (int x = 480; x < display_v_res; x++) {
+        memset(pixels + x * stride, 0, stride);
+    }
+    */
+    memset(pixels + 480 * stride, 0, linecount * stride);
+
+}
+
 void app_main(void) {
     // Initialize USB debug console
     usb_initialize();
@@ -236,10 +256,17 @@ void app_main(void) {
     int64_t render_time_sum = 0;
     int64_t vsync_time_sum = 0;
     int64_t blit_time_sum = 0;
+    int64_t frame_time_sum = 0;
+    int64_t frame_start_time = esp_timer_get_time();
     int perf_frame_count = 0;
     float current_fps = 0.0f;  // For on-screen display
 
     while(1) {
+        // Measure total frame time (from end of last frame to end of this frame)
+        int64_t now = esp_timer_get_time();
+        int64_t frame_time = now - frame_start_time;
+        frame_start_time = now;
+        frame_time_sum += frame_time;
         bsp_input_event_t event;
         if (xQueueReceive(input_event_queue, &event, delay) == pdTRUE) {
 #ifdef CAVAC_DEBUG
@@ -260,6 +287,17 @@ void app_main(void) {
                 bsp_device_restart_to_launcher();
             }
         }
+
+        /*
+        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 50, 490, 20, "The");
+        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 50, 490, 80, "Cube");
+        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 160, "3D render demo");
+        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 10, 490, 180, "by Rene 'cavac' Schickbauer");
+        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 220, "Loosely based on");
+        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 240, "the 'tinyrenderer'");
+        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 260, "project.");
+        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 10, 490, 280, "https://haqr.eu/tinyrenderer/");
+        */
 
         int64_t t_start, t_end;
 
@@ -289,10 +327,12 @@ void app_main(void) {
         }
         t_end = esp_timer_get_time();
         vsync_time_sum += (t_end - t_start);
+        clear_right_bar(&fb);
 
         // Blit to display
         t_start = esp_timer_get_time();
-        bsp_display_blit(0, 0, 480, 480, pax_buf_get_pixels(&fb));
+        //bsp_display_blit(0, 0, 480, 480, pax_buf_get_pixels(&fb));
+        blit();
         t_end = esp_timer_get_time();
         blit_time_sum += (t_end - t_start);
 
@@ -303,17 +343,18 @@ void app_main(void) {
             int64_t avg_render = render_time_sum / PERF_SAMPLE_FRAMES;
             int64_t avg_vsync = vsync_time_sum / PERF_SAMPLE_FRAMES;
             int64_t avg_blit = blit_time_sum / PERF_SAMPLE_FRAMES;
-            int64_t avg_total = avg_render + avg_vsync + avg_blit;
+            int64_t avg_frame = frame_time_sum / PERF_SAMPLE_FRAMES;
 
-            current_fps = 1000000.0f / avg_total;
-            ESP_LOGI(TAG, "Perf (avg %d frames): render=%lldus, vsync=%lldus, blit=%lldus, total=%lldus (%.1f fps)",
-                     PERF_SAMPLE_FRAMES, avg_render, avg_vsync, avg_blit, avg_total,
+            current_fps = 1000000.0f / avg_frame;
+            ESP_LOGI(TAG, "Perf (avg %d frames): render=%lldus, vsync=%lldus, blit=%lldus, frame=%lldus (%.1f fps)",
+                     PERF_SAMPLE_FRAMES, avg_render, avg_vsync, avg_blit, avg_frame,
                      current_fps);
 
             // Reset counters
             render_time_sum = 0;
             vsync_time_sum = 0;
             blit_time_sum = 0;
+            frame_time_sum = 0;
             perf_frame_count = 0;
         }
     }
