@@ -36,6 +36,8 @@ make monitor    # View debug output via USB
 - `main/renderer.h` - Renderer API (renderer_init, renderer_render_frame)
 - `main/texture_data.h` - Embedded texture (64x64 RGB, wooden crate)
 - `main/simple_font.h` - Fast 5x7 bitmap font for FPS display (rotation-aware)
+- `main/hershey_font.h` - Hershey vector font for text rendering (rotation-aware)
+- `main/hershey.h` - Hershey SIMPLEX font data (95 ASCII characters)
 - `main/sdcard.c` - SD card initialization (SPI mode) and mounting (debug only)
 - `main/sdcard.h` - SD card API (debug only)
 - `main/usb_device.c` - USB debug console initialization for ESP32-P4
@@ -137,6 +139,23 @@ Before each blit, the main loop waits on the semaphore to synchronize with the d
 
 PAX font rendering is too slow for real-time FPS display. A custom 5x7 bitmap font (`simple_font.h`) draws directly to the framebuffer. The font uses screen coordinates (where text should appear as the user sees it) and the coordinate transform to buffer coordinates handles the 270° display rotation automatically - no glyph rotation needed. Supports digits 0-9, decimal point, space, and "fps" letters.
 
+### Hershey Vector Font
+
+For scalable text rendering in the info panel, a Hershey vector font implementation (`hershey_font.h`) draws directly to the framebuffer using Bresenham line drawing. The font data (`hershey.h`) contains the SIMPLEX character set from paulbourke.net/dataformats/hershey/ - 95 ASCII characters (32-126) as coordinate arrays.
+
+**Font format**: `simplex[95][112]` array where each character has:
+- `[0]` = number of vertices
+- `[1]` = character width
+- Subsequent pairs: (x, y) coordinates, (-1, -1) = pen up
+
+**Usage**:
+```c
+// font_height is the desired height in pixels
+hershey_draw_string(fb_pixels, fb_stride, fb_height, x, y, "Text", font_height, r, g, b);
+```
+
+**Coordinate system**: Uses screen coordinates (800×480 as user sees it, x=0 left, y=0 top). The 270° display rotation is handled internally by the pixel-setting function.
+
 ### Buffer Coordinate Mapping (270° Rotation)
 
 Due to the 270° display rotation, buffer coordinates map to screen coordinates as follows:
@@ -149,6 +168,16 @@ memset(pixels + 480 * stride, 0, (display_v_res - 480) * stride);
 ```
 
 This is much faster than `pax_background()` which clears the entire framebuffer. The renderer already clears its own 480x480 region, so only the black bar needs explicit clearing.
+
+### DMA Blit Race Condition
+
+**IMPORTANT**: The `bsp_display_blit()` function uses DMA and is asynchronous - it returns before the transfer completes. Any framebuffer modifications (clearing, text drawing) must happen AFTER waiting for vsync and BEFORE the next blit call. Otherwise, the DMA from the previous blit may still be reading the buffer while new data is being written, causing visual artifacts (flickering, partial overwrites).
+
+Correct frame loop order:
+1. Render cube (writes to left 480×480 area)
+2. Wait for vsync
+3. Clear right bar + draw text (safe - previous DMA complete)
+4. Blit to display (starts new DMA transfer)
 
 ### Future Optimization Opportunities
 

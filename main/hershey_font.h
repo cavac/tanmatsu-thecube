@@ -67,11 +67,12 @@ static inline void hershey_draw_line(uint8_t* fb, int fb_stride, int fb_height,
 
 // Draw a single character from the Hershey font
 // screen_x, screen_y: SCREEN coordinates (as user sees them, y=0 at top)
-// scale: scaling factor (1.0 = original size, ~21 pixels tall)
+// font_height: desired font height in pixels
 // Returns: scaled character width for horizontal advance
 static inline int hershey_draw_char(uint8_t* fb, int fb_stride, int fb_height,
-                                    int screen_x, int screen_y, char c, float scale,
+                                    int screen_x, int screen_y, char c, float font_height,
                                     uint8_t r, uint8_t g, uint8_t b) {
+    float scale = font_height / HERSHEY_BASE_HEIGHT;
     // Map ASCII to array index (ASCII 32-126 -> index 0-94)
     int idx = (int)c - 32;
     if (idx < 0 || idx >= 95) {
@@ -128,18 +129,20 @@ static inline int hershey_draw_char(uint8_t* fb, int fb_stride, int fb_height,
 
 // Draw a string using the Hershey font
 // screen_x, screen_y: screen position (top-left of first character, same as pax_draw_text)
-// scale: scaling factor (e.g., 2.0 for ~42 pixel tall text)
+// font_height: desired font height in pixels
 static inline void hershey_draw_string(uint8_t* fb, int fb_stride, int fb_height,
-                                       int screen_x, int screen_y, const char* str, float scale,
+                                       int screen_x, int screen_y, const char* str, float font_height,
                                        uint8_t r, uint8_t g, uint8_t b) {
     while (*str) {
-        screen_x += hershey_draw_char(fb, fb_stride, fb_height, screen_x, screen_y, *str, scale, r, g, b);
+        screen_x += hershey_draw_char(fb, fb_stride, fb_height, screen_x, screen_y, *str, font_height, r, g, b);
         str++;
     }
 }
 
 // Calculate the width of a string without drawing it
-static inline int hershey_string_width(const char* str, float scale) {
+// font_height: desired font height in pixels
+static inline int hershey_string_width(const char* str, float font_height) {
+    float scale = font_height / HERSHEY_BASE_HEIGHT;
     int width = 0;
     while (*str) {
         int idx = (int)*str - 32;
