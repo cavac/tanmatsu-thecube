@@ -24,14 +24,9 @@
 #include "portmacro.h"
 #include "renderer.h"
 #include "usb_device.h"
-#include "simple_font.h"
 #include "hershey_font.h"
 
-//#define CAVAC_DEBUG
-
-#ifdef CAVAC_DEBUG
 #include "sdcard.h"
-#endif
 
 // External ST7701 color format function (from esp32-component-mipi-dsi-abstraction)
 extern esp_err_t st7701_set_color_format(lcd_color_rgb_pixel_format_t format);
@@ -55,7 +50,6 @@ void blit(void) {
 
 static const char* TAG = "cube";
 
-#ifdef CAVAC_DEBUG
 static int screenshot_counter = 0;
 static int64_t last_screenshot_time = 0;
 #define SCREENSHOT_DEBOUNCE_MS 500
@@ -106,7 +100,6 @@ static void save_screenshot(void) {
     fclose(f);
     ESP_LOGI(TAG, "Screenshot saved: %s", filename);
 }
-#endif
 
 #define BLACK 0xFF000000
 #define WHITE 0xFFFFFFFF
@@ -149,13 +142,13 @@ void app_main(void) {
     };
     bsp_led_write(led_data, sizeof(led_data));
 
-#ifdef CAVAC_DEBUG
+    bool can_screenshot = true;
     // Initialize SD card for screenshots
     res = sdcard_init();
     if (res != ESP_OK) {
         ESP_LOGW(TAG, "SD card init failed - screenshots disabled");
+        can_screenshot = false;
     }
-#endif
 
     // Get display parameters and rotation
     res = bsp_display_get_parameters(&display_h_res, &display_v_res, &display_color_format, &display_data_endian);
@@ -232,19 +225,28 @@ void app_main(void) {
     }
 
     uint32_t delay = pdMS_TO_TICKS(0);  // No delay - vsync provides timing
-    // Draw black background
-    /*
-    pax_background(&fb, BLACK);
-    pax_draw_text(&fb, WHITE, pax_font_sky_mono, 50, 490, 20, "The");
-    pax_draw_text(&fb, WHITE, pax_font_sky_mono, 50, 490, 80, "Cube");
-    pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 160, "3D render demo");
-    pax_draw_text(&fb, WHITE, pax_font_sky_mono, 10, 490, 180, "by Rene 'cavac' Schickbauer");
-    pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 220, "Loosely based on");
-    pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 240, "the 'tinyrenderer'");
-    pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 260, "project.");
-    pax_draw_text(&fb, WHITE, pax_font_sky_mono, 10, 490, 280, "https://haqr.eu/tinyrenderer/");
-    blit();
-    */
+
+    // Prepare static text
+    {
+        uint8_t* fb_pixels = (uint8_t*)pax_buf_get_pixels(&fb);
+        clear_right_bar(fb_pixels);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 20, "The", 50, 255, 255, 255);
+        //hershey_draw_string(fb_pixels, display_h_res, display_v_res, 550, 80, "Cube", 50, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 180, "3D render demo", 16, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 200, "by Rene 'cavac' Schickbauer", 10, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 240, "Loosely based on", 16, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 260, "the 'tinyrenderer'", 16, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 280, "project.", 16, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 310, "Tinyrenderer:", 10, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 325, "https://haqr.eu/tinyrenderer/", 8, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 350, "SIMPLEX Hershey Vector font:", 10, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 365, "https://paulbourke.net/dataformats/hershey/", 8, 255, 255, 255);
+
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 400, "ESC: exit", 12, 255, 255, 255); // White base text
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 400, "ESC", 12, 255, 255, 0); // Mark key in YELLOW
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 425, "SPACE: screenshot to SD card", 12, 255, 255, 255); // White base text
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 425, "SPACE", 12, 255, 255, 0); // Mark key in YELLOW
+    }
 
     // Performance measurement variables
     int64_t render_time_sum = 0;
@@ -255,6 +257,23 @@ void app_main(void) {
     int perf_frame_count = 0;
     float current_fps = 0.0f;  // For on-screen display
 
+    int16_t cubenamex = 550;
+    int16_t cubenamey = 80;
+    int16_t cubenamedeltax = 3;
+    int16_t cubenamedeltay = 2;
+    uint8_t cubenamecoloridx = 0;
+
+    uint8_t cubenamecolors[7][3] = {
+        {255, 0, 0},
+        {0, 255, 0},
+        {0, 0, 255},
+        {255, 0, 255},
+        {255, 255, 0},
+        {0, 255, 255},
+        {255, 255, 255}
+    };
+
+
     while(1) {
         // Measure total frame time (from end of last frame to end of this frame)
         int64_t now = esp_timer_get_time();
@@ -263,15 +282,12 @@ void app_main(void) {
         frame_time_sum += frame_time;
         bsp_input_event_t event;
         if (xQueueReceive(input_event_queue, &event, delay) == pdTRUE) {
-#ifdef CAVAC_DEBUG
             // KEYBOARD events for screenshot (fires once per character)
             if (event.type == INPUT_EVENT_TYPE_KEYBOARD) {
-                if (event.args_keyboard.ascii == ' ') {
+                if (can_screenshot && event.args_keyboard.ascii == ' ') {
                     save_screenshot();
                 }
-            } else
-#endif
-            if (event.type == INPUT_EVENT_TYPE_SCANCODE) {
+            } else if (event.type == INPUT_EVENT_TYPE_SCANCODE) {
                 // ESC via scancode returns to launcher
                 if (event.args_scancode.scancode == BSP_INPUT_SCANCODE_ESC) {
                     bsp_device_restart_to_launcher();
@@ -298,7 +314,7 @@ void app_main(void) {
         if (current_fps > 0) {
             char fps_str[16];
             snprintf(fps_str, sizeof(fps_str), "%.1f fps", current_fps);
-            font_draw_string_270(render_target, 480, 480, 12, 12, fps_str, 0, 0, 0);  // Black text
+            hershey_draw_string(fb_pixels, display_h_res, display_v_res, 20, 20, fps_str, 50, 0, 0, 0);
         }
 
         t_end = esp_timer_get_time();
@@ -312,17 +328,21 @@ void app_main(void) {
         t_end = esp_timer_get_time();
         vsync_time_sum += (t_end - t_start);
 
-        // Clear the right black bar area and draw text BEFORE blit
-        clear_right_bar(fb_pixels);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 20, "The", 50, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 550, 80, "Cube", 50, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 160, "3D render demo", 16, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 180, "by Rene 'cavac' Schickbauer", 10, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 220, "Loosely based on", 16, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 240, "the 'tinyrenderer'", 16, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 260, "project.", 16, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 290, "paulbourke.net/", 10, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 305, "dataformats/hershey/", 10, 255, 255, 255);
+        // No need to memset the area every frame: Overwrite the "CUBE" text at the old position with black, calculate new position and write a visible text
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, cubenamex, cubenamey, "Cube", 50, 0, 0, 0);
+        cubenamex += cubenamedeltax;
+        cubenamey += cubenamedeltay;
+        if(cubenamex < 550 || cubenamex > 570) {
+            cubenamedeltax *= -1;
+        }
+        if(cubenamey < 80 || cubenamey > 90) {
+            cubenamedeltay *= -1;
+        }
+        cubenamecoloridx++;
+        if(cubenamecoloridx == 7) {
+            cubenamecoloridx = 0;
+        }
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, cubenamex, cubenamey, "Cube", 50, cubenamecolors[cubenamecoloridx][0], cubenamecolors[cubenamecoloridx][1], cubenamecolors[cubenamecoloridx][2]);
 
         // Blit to display
         t_start = esp_timer_get_time();
