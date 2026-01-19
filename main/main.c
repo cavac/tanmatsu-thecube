@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 #include "bsp/device.h"
 #include "bsp/display.h"
 #include "bsp/input.h"
@@ -50,7 +51,6 @@ void blit(void) {
 
 static const char* TAG = "cube";
 
-static int screenshot_counter = 0;
 static int64_t last_screenshot_time = 0;
 #define SCREENSHOT_DEBOUNCE_MS 500
 
@@ -69,8 +69,13 @@ static void save_screenshot(void) {
         return;
     }
 
+    // Generate filename with current date/time
+    time_t t = time(NULL);
+    struct tm* tm_info = localtime(&t);
     char filename[64];
-    snprintf(filename, sizeof(filename), "/sd/cube_screenshot_%03d.ppm", screenshot_counter++);
+    snprintf(filename, sizeof(filename), "/sd/screenshot-%04d%02d%02d%02d%02d%02d.ppm",
+             tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
 
     FILE* f = fopen(filename, "wb");
     if (f == NULL) {
@@ -142,12 +147,25 @@ void app_main(void) {
     };
     bsp_led_write(led_data, sizeof(led_data));
 
-    bool can_screenshot = true;
-    // Initialize SD card for screenshots
-    res = sdcard_init();
-    if (res != ESP_OK) {
-        ESP_LOGW(TAG, "SD card init failed - screenshots disabled");
-        can_screenshot = false;
+    bool can_screenshot = false;
+    // Initialize SD card for screenshots (like launcher does)
+    bool sdcard_inserted = false;
+    bsp_input_read_action(BSP_INPUT_ACTION_TYPE_SD_CARD, &sdcard_inserted);
+    if (sdcard_inserted) {
+        ESP_LOGI(TAG, "SD card detected");
+        sd_pwr_ctrl_handle_t sd_pwr_handle = sdcard_initialize_ldo();
+        if (sd_pwr_handle != NULL) {
+            res = sdcard_mount(sd_pwr_handle);
+            if (res == ESP_OK) {
+                can_screenshot = true;
+            } else {
+                ESP_LOGW(TAG, "SD card mount failed - screenshots disabled");
+            }
+        } else {
+            ESP_LOGW(TAG, "SD LDO init failed - screenshots disabled");
+        }
+    } else {
+        ESP_LOGI(TAG, "No SD card inserted - screenshots disabled");
     }
 
     // Get display parameters and rotation
