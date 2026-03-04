@@ -142,10 +142,9 @@ void app_main(void) {
     };
     ESP_ERROR_CHECK(bsp_device_initialize(&bsp_configuration));
 
-    uint8_t led_data[] = {
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    };
-    bsp_led_write(led_data, sizeof(led_data));
+    for (int i = 0; i < 6; i++) bsp_led_set_pixel(i, 0x000000);
+    bsp_led_send();
+    bsp_led_set_mode(false);
 
     bool can_screenshot = false;
     // Initialize SD card for screenshots (like launcher does)
